@@ -70,15 +70,6 @@ parser.add_argument('-cmdt', action="store", dest="cmdTimeout", required=False,
                     help="Timeout for how long to let commands run: "
                     "default (60)")
 
-# Host Pool
-parser.add_argument('-d', action="store", dest="divider", required=False,
-                    help="Divide hosts by this number to create chunks of "
-                    "hosts to run at a time.")
-
-# Echo Command ( T/ F )
-# parser.add_argument('-e', action="store_true", dest="echoCmd", required=False,
-#                    help="Echo's the command ran before the result output")
-
 # Host List
 parser.add_argument('-hf', action="store", dest="hostFilePath", required=False,
                     help="Specify your own path to a hosts file [defaults to ~/.hostlist.txt]")
@@ -97,10 +88,6 @@ parser.add_argument('-ll', action="store", dest="logLevel", required=False,
                     help="Set Log Level: DEBUG, INFO (DEFAULT), "
                     "WARNING, ERROR, CRITICAL")
 
-# Proxy ( needed? )
-# parser.add_argument('-p', action="store", dest="proxyPort", required=False,
-#                    help="If using SSH Tunnel, define port to use")
-
 # Paramiko Logging
 parser.add_argument('-pl', action="store", dest="paramikoLogLevel",
                     required=False, help="Set Paramiko Log Level: DEBUG, "
@@ -110,7 +97,7 @@ parser.add_argument('-pl', action="store", dest="paramikoLogLevel",
 parser.add_argument('-r', action="store", dest="hostMatch", required=False,
                     help="Select Hosts matching supplied pattern")
 
-# Run command as sudo ( to be removed )
+# Run command as sudo
 parser.add_argument('-s', action="store_true", dest="sudo", required=False,
                     help="Run command with sudo (performance is much slower)")
 
@@ -125,9 +112,6 @@ parser.add_argument('-u', action="store", dest="siteUser", required=False,
                     help="Specify a username "
                     "(by default I use who you are logged in as)")
 
-# Hosts per pool
-# parser.add_argument('-1', action="store_true", dest="hostPerPool",
-#                    required=False, help="One host per pool")
 
 args = parser.parse_args()
 
@@ -180,9 +164,6 @@ def log_format(x): return ['%({0:s})'.format(i) for i in x]
 custom_format = ' '.join(log_format(custom_keys))
 formatter = jsonlogger.JsonFormatter(custom_format, datefmt='%Y-%m-%d')
 
-# formatter = logging.Formatter("%(levelname)s - %(message)s")
-# formatter = logging.Formatter(custom_format)
-
 # Set runner logger to handle the stream and formatter
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -230,33 +211,24 @@ def check_args_and_set_default(args):
     else:
         siteUser = ''
 
-    # DEFAULT CHUNKS ##
-    # default to dividing into chunks the same as the number of threads.
-    # Use -d 0 to turn off chunking
-    divider = workers
-    if args.divider:
-        divider = int(args.divider)
-
     return (hostFilePath, connectTimeout,
-            cmdTimeout, workers, siteUser, divider)
+            cmdTimeout, workers, siteUser)
 
 
 def create_log(logger):
-    # if they turned logging on, but didn't specify a file, use a default.
-    if args.logfile == "nofile":
+    if args.logfile:
+        logfile = args.logfile
+        logfilePath = os.path.expanduser(logfile)
+    else:
         logfile_dir = "{0}/tuxrunner-logs".format(home_dir)
-        tstamp = datetime.datetime.now().strftime("%Y-%m-%d.%H:%M:%S")
+        tstamp = datetime.datetime.now().strftime("%Y-%m-%d.%H.%M.%S")
 
         if not os.path.exists(logfile_dir):
             os.makedirs(logfile_dir)
         logfilePath = '{0}/tuxrunner.log.{1}'.format(logfile_dir, tstamp)
-    else:
-        logfile = args.logfile
-        logfilePath = os.path.expanduser(logfile)
 
     fh = logging.FileHandler(logfilePath, "w")
     logger.addHandler(fh)
-    # formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     formatter = jsonlogger.JsonFormatter(custom_format, datefmt='%Y-%m-%d')
     fh.setFormatter(formatter)
 
@@ -266,146 +238,30 @@ def create_log(logger):
     return logfilePath
 
 
-def clean_output(output, cmd):
-    # command only
-    if re.match(r'^' + cmd + '$', output):
-        return False
-    # prompt & command
-    elif output.startswith('[root') and output.endswith(cmd):
-        return False
-    # prompt & command different format
-    elif output.startswith('root@') and output.endswith('#'):
-        return False
-    # root prompt only
-    elif re.match(r'.*~?]?#$', output):
-        return False
-    # user prompt only
-    elif re.match(r'.*~?]\$$', output):
-        return False
-    # bash root prompt
-    elif re.match(r'^bash.*#$', output):
-        return False
-    # bash user prompt
-    elif re.match(r'^bash.*\$$', output):
-        return False
-    # Make sure password is never printed, just in case
-#    elif sitePasswd is not None:
-#        if re.match(r'' + sitePasswd, output):
-#            return False
-
-    # sudoMsg = ["We trust you have received the usual lecture from the local",
-    #           "System Administrator. It usually boils down to these three",
-    #           "things:",
-    #           "#1) Respect the privacy of others.",
-    #           "#2) Think before you type.",
-    #           "#3) With great power comes great responsibility."
-    #           ]
-
-    # if any(output in line for line in sudoMsg):
-    #    return False
-
-    return output
-
-
-# def run_cmds(ssh, cmds, hostname, sitePasswd, cmdTimeout):
-    # Echo's commands that provide no results.
-    # Helpful when working on network devices (i.e. LTM)
-    # if args.echoCmd:
-    #    logger.debug('[RESULT] - %s: %s' % (hostname, cmd))
 def run_cmds(ssh, cmds, hostname, cmdTimeout):
-    if args.sudo:
-        logger.info('[RESULT] -  SUDO Selected. Ignoring.')
-    #     try:
-    #         channel = ssh.invoke_shell()
-    #         channel.settimeout(cmdTimeout)
+    try:
+        for cmd in cmds:
+            logger.debug('[DEBUG] - %s: %s' % (hostname, cmd))
+            (stdin, stdout, stderr) = ssh.exec_command(cmd, cmdTimeout)
+            logger.debug('%s: [SENT] "%s"' % (hostname, cmd))
 
-    #         buff = ''
-    #         timer = 0
-    #         while not buff.endswith('$ '):
-    #             resp = channel.recv(9999)
-    #             buff += resp
-    #             timer += 1
-    #             # This timer fixes a bug where SSH closes
-    #             # immediately after login
-    #             time.sleep(1)
-    #             if timer == connectTimeout:
-    #                 raise Exception("Closing channel because after logging in "
-    #                                 "I didn't receive a prompt after {0}"
-    #                                 "seconds".format(connectTimeout))
+            for line in stdout.readlines():
+                line = line.rstrip()
+                logger.info({"hostname": hostname, "cmd": cmd, "cmd_stdout": line})
 
-    #         sudocmd = 'sudo -s'
-    #         channel.send(sudocmd + '\n')
-    #         logger.debug('%s: [SENT] "%s"' % (hostname, sudocmd))
+            # stderr
+            for line in stderr.readlines():
+                line = line.rstrip()
+                logger.error({"hostname": hostname, "cmd": cmd, "cmd_stdout": line})
+    except Exception as e:
+        logger.exception(e, exc_info=True)
+        raise Exception(e)
 
-    #         buff = ''
-    #         while 'assword' not in buff:
-    #             resp = channel.recv(9999)
-    #             buff += resp
-
-    #         channel.send(sitePasswd + '\n')
-    #         logger.debug('%s: [SENT] sudo pass' % hostname)
-
-    #         buff = ''
-    #         while not buff.endswith('# '):
-    #             resp = channel.recv(9999)
-    #             buff += resp
-
-    #         for cmd in cmds:
-    #             # Echo's commands that provide no results.
-    #             # Helpful when working on network devices (i.e. LTM)
-    #             if args.echoCmd:
-    #                 logger.info('[RESULT] - %s: %s' % (hostname, cmd))
-    #             channel.send(cmd + '\n')
-    #             logger.debug('%s: [SENT] "%s"' % (hostname, cmd))
-
-    #             buff = ''
-    #             while not buff.endswith('# '):
-    #                 resp = channel.recv(9999)
-    #                 buff += resp
-
-    #             for line in buff.split('\n'):
-    #                 line = line.strip()
-    #                 if clean_output(line, cmd):
-    #                     logger.info('[RESULT] - %s: %s' % (hostname, line))
-
-    #     except Exception as e:
-    #         channel.close()
-    #         logger.debug('channel closed')
-    #         raise Exception(e)
-    #   else:
-    #       logger.debug('channel closed')
-    #       channel.close()
-    else:
-        try:
-            for cmd in cmds:
-                # Echo's commands that provide no results.
-                # Helpful when working on network devices (i.e. LTM)
-                # if args.echoCmd:
-                logger.debug('[DEBUG] - %s: %s' % (hostname, cmd))
-                (stdin, stdout, stderr) = ssh.exec_command(cmd, cmdTimeout)
-                logger.debug('%s: [SENT] "%s"' % (hostname, cmd))
-
-                for line in stdout.readlines():
-                    # logger.debug('cmd :  {}'.format(cmd))
-                    line = line.rstrip()
-                    logger.info({"hostname": hostname, "cmd": cmd, "cmd_stdout": line})
-                    # logger.debug('line:  {}'.format(line))
-                    # if clean_output(line, cmd):
-                    #    logger.info('[RESULT] - %s: %s' % (hostname, line))
-
-                # stderr
-                for line in stderr.readlines():
-                    line = line.rstrip()
-                    logger.error({"hostname": hostname, "cmd": cmd, "cmd_stdout": line})
-        except Exception as e:
-            logger.exception(e, exc_info=True)
-            raise Exception(e)
     logger.debug("ssh closed")
     ssh.close()
 
 
 def ssh_to_host(hosts, connectTimeout, cmdTimeout):
-    # def ssh_to_host(hosts, sitePasswd, connectTimeout, cmdTimeout):
     for i in range(workers):
         t = threading.Thread(target=worker,
                              args=(siteUser,
@@ -423,7 +279,6 @@ def ssh_to_host(hosts, connectTimeout, cmdTimeout):
 
 
 def worker(siteUser, connectTimeout, cmdTimeout):
-    # def worker(siteUser, sitePasswd, connectTimeout, cmdTimeout):
     while True:
         try:
             hostname = q.get()
@@ -436,7 +291,6 @@ def worker(siteUser, connectTimeout, cmdTimeout):
 
 
 def node_shell(hostname, siteUser, connectTimeout, cmdTimeout):
-    # def node_shell(hostname, siteUser, sitePasswd, connectTimeout, cmdTimeout):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -479,9 +333,6 @@ def node_shell(hostname, siteUser, connectTimeout, cmdTimeout):
             logger.debug('Connected: {0}, {1}, {2}, proxy disabled'
                          .format(hostname, siteUser, connectTimeout))
         else:
-            # proxyPort = int(args.proxyPort)
-            # proxyCommandStr = "nc -X 5 -x localhost:%s %s %s" %
-            # (proxyPort, hostname, '22')
             logger.debug('Attempting: {0}, {1}, {2}, proxy enabled'
                          .format(cfg['hostname'], cfg['username'],
                                  connectTimeout))
@@ -498,58 +349,45 @@ def node_shell(hostname, siteUser, connectTimeout, cmdTimeout):
             logger.debug('Connected: {0}, {1}, {2}, proxy enabled'
                          .format(cfg['hostname'], cfg['username'],
                                  connectTimeout))
-        # transport = ssh.get_transport()
-        # transport.set_keepalive(0)
-        # transport = ssh.get_transport().open_session()
-        # paramiko.agent.AgentRequestHandler(transport)
-
-        # TODO:
-        #   Update the following if/else statement so that if command file, it uploads the
-        #   script and executes ( prepending SUDO )
-        #   else, just remote execute the command ( again premending SUDO )
 
         if args.commandFile:
             try:
-                cmds = open(args.commandFile)
-                cmds = [cmd.strip() for cmd in cmds]
+                # cmds = open(args.commandFile)
+                # cmds = [cmd.strip() for cmd in cmds]
+
+                # Setup sftp connection and transmit this script
+                logger.debug("About to open SFTP ... ")
+                sftp = ssh.open_sftp()
+                sftp.put("/Users/mkettlewell/ssh_test.py", '/tmp/ssh_test.py')
+                sftp.close()
+
+                logger.debug("Closed the SFTP Connection ... ")
+                # Run the transmitted script remotely without args and show its output.
+                # SSHClient.exec_command() returns the tuple (stdin,stdout,stderr)
+                logger.debug("About to execute remote script... ")
+                (stdin, stdout, stderr) = \
+                    ssh.exec_command('sudo python /tmp/ssh_test.py blah')
+
+                # stderr
+                for line in stderr.readlines():
+                    line = line.rstrip()
+                    logger.info('[RESULT - STDERR] - %s' % (line))
+
+                # stdout
+                for line in stdout.readlines():
+                    line = line.rstrip()
+                    logger.info('[RESULT - STDOUT] - %s' % (line))
             except Exception as e:
                 logger.error(e, exc_info=True)
         else:
             cmd = args.commandString
             cmds = [cmd]
-            # pprint(cmds)
+            logger.debug('About to run_cmds')
+            run_cmds(ssh, cmds, hostname, cmdTimeout)
 
-        # Setup sftp connection and transmit this script
-        logger.debug("About to open SFTP ... ")
-        sftp = ssh.open_sftp()
-        sftp.put("/Users/mkettlewell/ssh_test.py", '/tmp/ssh_test.py')
-        sftp.close()
+# TODO: create a generic "CMD" string, whether it's a command file,
+#       or a cmd, that will call run_cmds ( or a variation of that )
 
-        logger.debug("Closed the SFTP Connection ... ")
-        # Run the transmitted script remotely without args and show its output.
-        # SSHClient.exec_command() returns the tuple (stdin,stdout,stderr)
-        logger.debug("About to execute remote script... ")
-        (stdin, stdout, stderr) = \
-            ssh.exec_command('sudo python /tmp/ssh_test.py blah')
-
-        # stderr
-        for line in stderr.readlines():
-            line = line.rstrip()
-            logger.info('[RESULT - STDERR] - %s' % (line))
-
-        # stdout
-        for line in stdout.readlines():
-            line = line.rstrip()
-            logger.info('[RESULT - STDOUT] - %s' % (line))
-
-        logger.debug('About to run_cmds')
-        # pprint(cmds)
-        # pprint(hostname)
-        # pprint(sitePasswd)
-        # pprint(cmdTimeout)
-        run_cmds(ssh, cmds, hostname, cmdTimeout)
-
-        logger.debug('about to run successful_logins.append')
         successful_logins.append(hostname)
 
     except Exception as e:
@@ -582,22 +420,6 @@ def get_hosts(hostFilePath):
                      .format(hostFilePath))
         exit()
 
-    # # Select one host per pool
-    # if args.hostPerPool:
-    #     logger.info('[PARAM SET] - 1 HOST PER POOL')
-    #     seen = {}
-    #     hostPerPool = []
-    #     for host in selected_hosts:
-    #         # Here strip values that make hostnames unique like #'s
-    #         # That way the dict matches after 1 host per pool has been seen
-    #         # Removing #'s in a hostname like host1234.tuxlabs.com,
-    #         # modify this regex for your specific needs
-    #         nhost = re.sub("\d+?\.", ".", host)  # noqa
-    #         if nhost not in seen:
-    #             seen[nhost] = 1
-    #             hostPerPool.append(host)
-    #     selected_hosts = hostPerPool
-
     logger.info('[PARAM SET] - {0} HOSTS HAVE BEEN SELECTED'
                 .format(len(selected_hosts)))
 
@@ -615,33 +437,20 @@ def list_hosts_and_exit(hostlist):
     exit()
 
 
-# def decrypt_the_pass(encryptedPass):
-#     try:
-#         key = storePass.get_key()
-#         BS = 16
-
-#         def unpad(s): return s[:-ord(s[len(s)-1:])]
-#         # unpad = lambda s: s[:-ord(s[len(s)-1:])]  # noqa ignore=E731
-
-#         encryptedPass = base64.b64decode(encryptedPass)
-#         iv = Random.new().read(BS)
-#         cipher = AES.new(key, AES.MODE_CFB, iv)
-#         decryptedPass = iv + cipher.decrypt(encryptedPass)
-
-#         decryptedPass = unpad(decryptedPass[32:])
-
-#         return decryptedPass
-#     except Exception as e:
-#         logging.error(e)
-
-
 if __name__ == "__main__":
-    (hostFilePath, connectTimeout, cmdTimeout, workers, siteUser, divider) =\
+    (hostFilePath, connectTimeout, cmdTimeout, workers, siteUser) =\
         check_args_and_set_default(args)
 
-    if args.logfile:
-        logfilePath = create_log(logger)
-        logger.info("[PARAM SET] - LOGFILE IS %s" % logfilePath)
+    if args.sudo:
+        logger.info('[RESULT] - Setting sudo')
+        SUDO = 'sudo'
+    else:
+        logger.info('[RESULT] -  Unsetting sudo')
+        SUDO = ''
+
+    logfilePath = create_log(logger)
+    logger.info("[PARAM SET] - LOGFILE IS %s" % logfilePath)
+
     try:
         if args.listOnly or args.commandString or args.commandFile:
             # if any of these are true, we will need to get the hosts.
@@ -670,52 +479,32 @@ if __name__ == "__main__":
                     SUDO = ''
                     logger.info("[PARAM SET] - USERMODE ACTIVATED ( No Sudo ) ")
 
-                # Magic that breaks apart your host list chunks of X.
-                # if divider is 0, all hosts will be executed.
-                if not divider == 0:
-                    chunks = list(itertools.zip_longest(*[iter(selected_hosts)]*divider))
-                    logger.info("[PARAM SET] - DIVIDER IS {} CREATING {} "
-                                "CHUNKS".format(divider, len(chunks)))
-                else:
-                    chunks = [selected_hosts]
-                    logger.info("[PARAM SET] - TURBO MODE ENABLED - "
-                                "CHUNKING IS DISABLED")
-                # pprint(chunks)
-                # pfPath = '%s/.runner/.pass' % (home_dir)
-                # if os.path.isfile(pfPath):
-                #     try:
-                #         pf = open(pfPath)
-                #         encryptedPass = pf.readline()
-                #         sitePasswd = decrypt_the_pass(encryptedPass)
-                #         logger.info('[PARAM SET] - RETRIEVED ENCRYPTED PASSWD')
-                #     except Exception as e:
-                #         logging.error('{} : Prompting for password instead.'
-                #                       .format(e))
-                #         # sitePasswd = getpass
-                #         # .getpass("Please Enter Site Pass: ")
-                #         sitePasswd = None
-                #         print("")
+                # # Magic that breaks apart your host list chunks of X.
+                # # if divider is 0, all hosts will be executed.
+                # if not divider == 0:
+                #     chunks = list(itertools.zip_longest(*[iter(selected_hosts)]*divider))
+                #     logger.info("[PARAM SET] - DIVIDER IS {} CREATING {} "
+                #                 "CHUNKS".format(divider, len(chunks)))
                 # else:
-                #   sitePasswd = getpass
-                #   .getpass("Please Enter Site Pass: ")
-                # sitePasswd = None
-                # print("")
+                #     chunks = [selected_hosts]
+                #     logger.info("[PARAM SET] - TURBO MODE ENABLED - "
+                #                 "CHUNKING IS DISABLED")
 
                 # start timer ##
                 stime = time.time()
 
                 q = queue.Queue()
 
-                for host_chunk in chunks:
-                    ssh_to_host(host_chunk,
-                                connectTimeout, cmdTimeout)
+                logger.info("[PARAM SET] - TURBO MODE ENABLED - "
+                            "CHUNKING IS DISABLED")
+                ssh_to_host(selected_hosts,
+                            connectTimeout, cmdTimeout)
 
                 # end timer ##
                 etime = time.time()
                 run_time = int(etime - stime)
 
                 timestamp = str(datetime.timedelta(seconds=run_time))
-                # print("")
                 summary = "Successfully logged into {0} / {1} hosts and ran your commands in {2} second(s)".format((len(successful_logins)), len(selected_hosts), timestamp)
                 if len(successful_logins) == 0:
                     summary = "Failed to login on all {0} hosts."\
@@ -725,13 +514,11 @@ if __name__ == "__main__":
                     for failed_host in failed_logins:
                         logger.info('[FAILED] - to login to: {}'
                                     .format(failed_host))
-                    # print("")
-                if args.logfile:
-                    logger.info("[LOG] - Your logfile can be viewed @ {}"
-                                .format(logfilePath))
+
+                logger.info("[LOG] - Your logfile can be viewed @ {}"
+                            .format(logfilePath))
         else:
             parser.print_help()
-            # print("")
             logger.error("Either -l (list hosts only) or -c (Run command)"
                          "or -cf (Run command file) is required.")
     except KeyboardInterrupt:
